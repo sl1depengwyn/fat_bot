@@ -5,7 +5,7 @@ from aiogram import types
 from aiogram.utils.exceptions import BotBlocked
 from aiogram.dispatcher.filters.state import State, StatesGroup
 
-admin_commands = ['разослать рассылку', 'количество активных пользователей']
+admin_commands = ['Сделать рассылку', 'Кол-во активных пользователей']
 spam = ''
 
 
@@ -34,12 +34,12 @@ async def admin_panel(message: types.Message):
 
 @dp.message_handler(state=Admin.admin, content_types=types.ContentTypes.TEXT)
 async def process_callback_initial_button(message: types.Message):
-    if message.text.lower() not in admin_commands:
-        await message.answer("выберите действие, используя клавиатуру ниже", reply_markup=get_commands_keyboard())
-    elif message.text.lower() == admin_commands[0]:
-        await message.answer("напишите текст рассылки:")
+    if message.text not in admin_commands:
+        await message.answer("Выберите действие, используя клавиатуру ниже:", reply_markup=get_commands_keyboard())
+    elif message.text == admin_commands[0]:
+        await message.answer("Напишите текст рассылки:")
         await Admin.waiting_for_spam.set()
-    elif message.text.lower() == admin_commands[1]:
+    elif message.text == admin_commands[1]:
         await get_number_of_users(message)
 
 
@@ -54,6 +54,7 @@ async def confirmation(message: types.Message):
     keyboard = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
     keyboard.add('да')
     keyboard.add('нет')
+    keyboard.add('назад')
     global spam
     spam = message.text
     await message.answer("подтвердите текст рассылки:", reply_markup=keyboard)
@@ -62,7 +63,10 @@ async def confirmation(message: types.Message):
 
 @dp.message_handler(state=Admin.waiting_for_confirmation, content_types=types.ContentTypes.TEXT)
 async def send_spam(message: types.Message):
-    if message.text.lower() not in {'да', 'нет'}:
+    if message.text.lower() == 'назад':
+        await Admin.admin.set()
+        await admin_panel(message)
+    elif message.text.lower() not in {'да', 'нет'}:
         await message.answer("подтвердите текст рассылки(да, нет)")
     elif message.text.lower() == 'да':
         db = SQLighter(config.db)
@@ -73,11 +77,11 @@ async def send_spam(message: types.Message):
                 await bot.send_message(user[0], spam)
                 cnt += 1
                 db.mark_unblocked(user[0])
-            except BotBlocked:
+            except:
                 db.mark_blocked(user[0])
         db.close()
-        await message.answer("сообщений отправлено: {}".format(cnt), reply_markup=get_commands_keyboard())
+        await message.answer("Сообщений отправлено: {}".format(cnt), reply_markup=get_commands_keyboard())
         await Admin.admin.set()
     elif message.text.lower() == 'нет':
-        await message.answer("напишите текст рассылки:")
+        await message.answer("Напишите текст рассылки:")
         await Admin.waiting_for_spam.set()

@@ -1,14 +1,17 @@
-import requests
 import asyncio
 import sqlite3
+
+import requests
 from aiogram import types
 from aiogram.dispatcher import FSMContext
 from aiogram.dispatcher.filters.state import State, StatesGroup
+from bs4 import BeautifulSoup
+from telegraph import Telegraph
+from telegraph.utils import html_to_content
 
 import config
-from misc import dp
-
 from SQLighter import SQLighter
+from misc import dp, bot
 
 
 class Diet(StatesGroup):
@@ -22,7 +25,6 @@ class Diet(StatesGroup):
     waiting_for_desired_weight = State()
     waiting_for_diet = State()
     done = State()
-    user_is_admin = State()
 
 
 genders = {"женский": "f",
@@ -31,6 +33,12 @@ genders = {"женский": "f",
 dietgoals = {"похудение": "losing",
              "поддержание": "support",
              "набор веса": "increase"}
+
+
+async def get_diet_keyboard():
+    keyboard = types.ReplyKeyboardMarkup(resize_keyboard=True)
+    keyboard.add('✅ Сделать расчет')
+    return keyboard
 
 
 async def make_keyboard(d):
@@ -46,11 +54,6 @@ async def make_keyboard(d):
 async def scheduled_message(message, text, bot):
     await asyncio.sleep(30 * 60)
     await message.answer(text.format(bot))
-
-
-@dp.message_handler(state=Diet.done, content_types=types.ContentTypes.TEXT)
-async def echo(message: types.Message):
-    await message.answer("Вкусно?")
 
 
 @dp.message_handler(commands=['start'], state='*')
@@ -78,7 +81,7 @@ async def process_callback_initial_button(callback_query: types.CallbackQuery):
     return await diet_step_start(callback_query.message)
 
 
-@dp.message_handler(commands=['reset'], state='*')
+@dp.message_handler(lambda m: m.text == '✅ Сделать расчет', state='*')
 async def diet_step_start(message: types.Message):
     await message.answer("1️⃣Выбери свою цель:", reply_markup=await make_keyboard(dietgoals))
     await Diet.waiting_for_dietgoal.set()
@@ -146,8 +149,12 @@ async def diet_step_desired_weight(message: types.Message, state: FSMContext):
         await message.reply("Укажите вес:")
         return
     await state.update_data(currentWeight=message.text)
-    await message.answer("6️⃣Масса тела желаемая, кг (целое число)")
-    await Diet.waiting_for_desired_weight.set()
+    if (await state.get_data())['dietgoal'] != 'support':
+        await message.answer("6️⃣Масса тела желаемая, кг (целое число)")
+        await Diet.waiting_for_desired_weight.set()
+    else:
+        await Diet.waiting_for_desired_weight.set()
+        await diet_step_final(message, state)
 
 
 @dp.message_handler(state=Diet.waiting_for_desired_weight, content_types=types.ContentTypes.TEXT)
@@ -156,25 +163,115 @@ async def diet_step_final(message: types.Message, state: FSMContext):
         await message.reply("Укажите желаемый вес:")
         return
     await state.update_data(desiredWeight=message.text)
+    await Diet.done.set()
+
     user_data = await state.get_data()
-    user_data["secret_key"] = "#uzgth-s)yjp$yyltthol+nrq$t4(nvg_qa!yf%b2grrpx^hf("
-    user_data["email"] = "bot@bot.bot"
-    await message.answer('''ОТЛИЧНО, {} 👍
+    user_data['saturation_speed'] = 10
+    user_data['pregnant'] = 'n'
+    user_data['breastFeeding'] = 'n'
+    user_data['email'] = 'bot@bot.bot'
+    user_data['form_version'] = 'v2'
+    user_data['olddietfile'] = ''
+    user_data['drugs'] = ''
+    user_data['forbiddenFood'] = ''
+    user_data['ration'] = ''
+    user_data['activity'] = ''
+    user_data['diet_text'] = ''
+    user_data['diet_raw_text'] = ''
+    user_data['disease'] = ''
+    user_data['calories'] = ''
+    user_data['mass_time'] = ''
+    user_data['date_to_goal'] = ''
+    user_data['factors'] = ''
+    user_data['episodes_of_something'] = ''
+    user_data['physical_activity'] = ''
+    user_data['do_you_want_special_fitfood'] = ''
+    user_data['time_of_phis_training'] = ''
+    user_data['pref_products'] = ''
+    await message.answer('Наш искусственный интеллект формирует для Вас индивидуальный план питания 🍽, подождите.', reply_markup=await get_diet_keyboard())
 
-Первый шаг к твоему идеальному Я сделан 🤗
+    await bot.send_chat_action(message.chat.id, 'typing')
 
-Держи свой персональный недельный план питания для твоей цели ⤵️'''.format(message.from_user.first_name))
+    r = requests.post(config.backend_url + "/dietform/fillproductionform_api/", user_data)
 
-    r = requests.post("http://personalcoach.pro/api/v1/save_form_and_get_diet/", user_data)
-    print(user_data)
+    if r.status_code == 200:
+        data = requests.get(config.backend_url + r.json()['url'])
 
-    await scheduled_message(message, '''Для того, чтобы: 
-    ✅получить рекомендации к рациону
-    ✅узнать как правильно готовить продукты
-    ✅чем можно заменять продукты
-    ✅какие продукты можно сократить и удалить, а какие есть без ограничений
-    ✅как гармонично сочетать меню с различными видами тренировок и физической нагрузки...
+        telegraph_user = Telegraph().create_account(message.from_user.first_name)
+        telegraph = Telegraph(telegraph_user.access_token)
 
-    ПЕРЕХОДИТЕ В НАШЕГО ОСНОВНОГО ПОМОЩНИКА ➡️  {}''', config.redirect_bot)
+        soup = BeautifulSoup(data.text, 'html.parser')
+        blocks = soup.find_all('div', {'class': 'row w-row'})
+        days = [{'0': '0'}] * 7
+
+        for block in blocks:
+            html_content = ''
+
+            day_number = block.find('span', {'class': 'day_number'}).text
+            html_content += f'<h3>День {day_number.strip()}</h3>\n'
+
+            daily_fppcal_vals = block.find_all('div', {'class': 'daily-fpccal-value'})
+            html_content += f'<p>Белки: {daily_fppcal_vals[0].text.strip()}\n'
+            html_content += f'Жиры: {daily_fppcal_vals[1].text.strip()}\n'
+            html_content += f'Углеводы: {daily_fppcal_vals[2].text.strip()}\n'
+            html_content += f'Калории: {daily_fppcal_vals[3].text.strip()}</p>\n\n'
+
+            daily_product_list = block.find_all('p', {'class': 'daily-products-list'})
+            html_content += '<p><b>Продукты:</b></p>\n<p>'
+            for prod in daily_product_list:
+                html_content += prod.text.strip() + '\n'
+
+            html_content += '</p>\n'
+
+            rations = block.find_all('div', {'class': 'ration-div2'})
+            for ration in rations:
+                html_content += f'<h4>{ration.find("h2", {"class": "ration-name"}).text.strip()}</h4>\n'
+
+                fppcal_vals = ration.find_all('div', {'class': 'fpccal-value'})
+                html_content += f'<p>Белки: {fppcal_vals[0].text.strip()}\n' \
+                                f'Жиры: {fppcal_vals[1].text.strip()}\n' \
+                                f'Углеводы: {fppcal_vals[2].text.strip()}\n' \
+                                f'Калории: {fppcal_vals[3].text.strip()}</p>\n\n'
+
+                html_content += f'<p><b>{ration.find("div", {"class": "meal-name"})}</b></p>\n<p>'
+
+                products = ration.find_all('div', {'class': 'product-div'})
+                for product in products:
+                    name = product.find('div', {'class': 'product-name'})
+                    weight = product.find('div', {'class': 'product-weight'})
+
+                    html_content += f'{name.text.strip()} <b>{weight.text.strip()}</b>\n'
+
+            html_content += '</p><br>'
+
+            page = telegraph.create_page(title=f'Рацион ({day_number})', content=html_to_content(html_content))
+
+            day = {'url': page.url,
+                   'day_number': day_number,
+                   'plate': f'План на {day_number}-й день'}
+
+            days[int(day_number) - 1] = day
+
+        day_keyboard = {}
+        for day in days:
+            day_keyboard[day['plate']] = 'get_d' + '-_-' + day['day_number'] + '-_-' + day['url']
+        await message.answer('Готово!👌 ', reply_markup=await get_diet_keyboard())
+        await message.answer('Используйте кнопки ниже⬇️, чтобы увидеть рацион для этого дня:', reply_markup=await make_keyboard(day_keyboard))
+
+        await scheduled_message(message, '''Для того, чтобы: 
+        ✅получить рекомендации к рациону
+        ✅узнать как правильно готовить продукты
+        ✅чем можно заменять продукты
+        ✅какие продукты можно сократить и удалить, а какие есть без ограничений
+        ✅как гармонично сочетать меню с различными видами тренировок и физической нагрузки...
+    
+        ПЕРЕХОДИТЕ В НАШЕГО ОСНОВНОГО ПОМОЩНИКА ➡️  {}''', config.redirect_bot)
+    else:
+        await message.answer('К сожалению, наш алгоритм не смог сформировать под Ваш запрос план питания, попробуйте изменить исходные данные 🤷‍♀️', reply_markup=await get_diet_keyboard())
 
 
+@dp.callback_query_handler(lambda c: c.data.split('-_-')[0] == 'get_d', state=Diet.done)
+async def process_callback_initial_button(callback_query: types.CallbackQuery):
+    callback_data = callback_query.data.split('-_-')
+    await callback_query.message.edit_text(f'<a href="{callback_data[2]}">План</a> на {callback_data[1]}-й день',
+                                           parse_mode='HTML', reply_markup=callback_query.message.reply_markup)
