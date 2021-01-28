@@ -202,7 +202,7 @@ async def diet_step_final(message: types.Message, state: FSMContext):
 
         soup = BeautifulSoup(data.text, 'html.parser')
         blocks = soup.find_all('div', {'class': 'row w-row'})
-        days = [{'0': '0'}] * 7
+        days = []
 
         for block in blocks:
             html_content = ''
@@ -250,7 +250,7 @@ async def diet_step_final(message: types.Message, state: FSMContext):
                    'day_number': day_number,
                    'plate': f'План на {day_number}-й день'}
 
-            days[int(day_number) - 1] = day
+            days.append(day)
 
         day_keyboard = {}
         for day in days:
